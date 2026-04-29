@@ -66,6 +66,11 @@
                 sessionId: 'fitnessScraperSessionId',
                 sessionStart: 'fitnessScraperSessionStart'
             };
+            const API_BASE = window.location.protocol === 'file:' ? 'http://localhost:3002' : '';
+
+            function apiUrl(pathname) {
+                return `${API_BASE}${pathname}`;
+            }
 
             const state = {
                 step: 1,
@@ -341,8 +346,8 @@
             async function loadBootstrapData() {
                 try {
                     const [citiesResponse, coverageResponse] = await Promise.all([
-                        fetch('/api/cities'),
-                        fetch('/api/coverage-modes')
+                        fetch(apiUrl('/api/cities')),
+                        fetch(apiUrl('/api/coverage-modes'))
                     ]);
 
                     const cityData = await citiesResponse.json();
@@ -403,7 +408,7 @@
                 }
 
                 try {
-                    const response = await fetch(`/api/status/${savedSessionId}`);
+                    const response = await fetch(apiUrl(`/api/status/${savedSessionId}`));
                     if (!response.ok) {
                         clearSessionRecovery();
                         return;
@@ -439,7 +444,7 @@
                 render();
 
                 try {
-                    const response = await fetch('/api/validate-key', {
+                    const response = await fetch(apiUrl('/api/validate-key'), {
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json'
@@ -488,7 +493,7 @@
                 render();
 
                 try {
-                    const response = await fetch('/api/scrape', {
+                    const response = await fetch(apiUrl('/api/scrape'), {
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json'
@@ -526,7 +531,7 @@
                 stopPolling();
                 state.pollingHandle = setInterval(async () => {
                     try {
-                        const response = await fetch(`/api/status/${sessionId}`);
+                        const response = await fetch(apiUrl(`/api/status/${sessionId}`));
                         if (!response.ok) {
                             throw new Error('Failed to fetch session status');
                         }
@@ -571,7 +576,7 @@
 
             async function loadResults(sessionId) {
                 try {
-                    const response = await fetch(`/api/results/${sessionId}`);
+                    const response = await fetch(apiUrl(`/api/results/${sessionId}`));
                     const data = await response.json();
 
                     state.results = data.results || [];
@@ -747,6 +752,12 @@
                                     <i class="fas fa-location-dot mr-2"></i>${escapeHtml(city)}
                                 </button>
                             `).join('')}
+                            ${!filteredCities.length ? `
+                                <div class="col-span-full rounded-2xl border border-dashed ${state.validationError ? 'border-rose-200 bg-rose-50 text-rose-800' : 'border-slate-200 bg-slate-50 text-slate-500'} px-4 py-6 text-center">
+                                    <p class="font-medium">${escapeHtml(state.validationError || (Object.keys(state.cities).length ? 'No cities match your search.' : 'City metadata is unavailable right now. Please refresh or open the app from the running server URL.'))}</p>
+                                    ${state.validationError ? '<p class="mt-2 text-sm">If you opened the HTML directly, use the hosted or localhost app URL instead of file://.</p>' : ''}
+                                </div>
+                            ` : ''}
                         </div>
                         ${state.selectedCities.length ? `
                             <div class="rounded-2xl border border-cyan-200 bg-cyan-50 p-4">
