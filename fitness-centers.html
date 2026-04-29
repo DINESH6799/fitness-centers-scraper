@@ -1124,13 +1124,27 @@
                 renderContent();
             }
 
+            function renderContentPreservingInput(inputId, cursorPosition) {
+                renderContent();
+                requestAnimationFrame(() => {
+                    const input = document.getElementById(inputId);
+                    if (!input) {
+                        return;
+                    }
+
+                    input.focus();
+                    const safePosition = Math.min(cursorPosition, input.value.length);
+                    input.setSelectionRange(safePosition, safePosition);
+                });
+            }
+
             function bindStepEvents() {
                 if (state.step === 1) {
                     const citySearchInput = document.getElementById('citySearchInput');
                     if (citySearchInput) {
                         citySearchInput.oninput = (event) => {
                             state.citySearch = event.target.value;
-                            renderContent();
+                            renderContentPreservingInput('citySearchInput', event.target.selectionStart ?? state.citySearch.length);
                         };
                     }
 
@@ -1187,7 +1201,7 @@
                         apiKeyInput.oninput = (event) => {
                             state.apiKey = event.target.value;
                             state.validationError = '';
-                            renderContent();
+                            renderContentPreservingInput('apiKeyInput', event.target.selectionStart ?? state.apiKey.length);
                         };
                     }
 
