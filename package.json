@@ -1,0 +1,24 @@
+{
+  "name": "fitness-centers-scraper",
+  "version": "1.0.0",
+  "description": "City-wide gym and fitness center scraper with Google Places and optional Supabase persistence",
+  "main": "fitness-server.js",
+  "scripts": {
+    "start": "node fitness-server.js",
+    "dev": "nodemon fitness-server.js",
+    "fitness:start": "node fitness-server.js",
+    "fitness:dev": "nodemon fitness-server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "axios": "^1.6.0",
+    "@supabase/supabase-js": "^2.39.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}

@@ -1,0 +1,1229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gym & Fitness Center Scraper</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+</head>
+<body class="min-h-screen bg-gradient-to-br from-slate-100 via-cyan-50 to-indigo-100 text-slate-900">
+    <div class="max-w-6xl mx-auto px-4 py-8">
+        <header class="relative overflow-hidden rounded-[32px] bg-slate-950 text-white shadow-2xl shadow-cyan-200/60">
+            <div class="absolute inset-0 bg-[radial-gradient(circle_at_top_right,_rgba(34,211,238,0.2),_transparent_28%),radial-gradient(circle_at_left,_rgba(99,102,241,0.28),_transparent_34%)]"></div>
+            <div class="relative px-6 py-8 md:px-10 md:py-10">
+                <div class="flex flex-col gap-6 md:flex-row md:items-end md:justify-between">
+                    <div class="max-w-3xl">
+                        <div class="flex flex-wrap items-center gap-3 mb-4">
+                            <span class="inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-1 text-sm font-medium ring-1 ring-white/15">
+                                <i class="fas fa-dumbbell text-cyan-300"></i>
+                                Hybrid fitness scrape
+                            </span>
+                            <span class="inline-flex items-center gap-2 rounded-full bg-emerald-100 px-3 py-1 text-sm font-medium text-emerald-800 border border-emerald-200">
+                                <span class="h-2 w-2 rounded-full bg-emerald-500"></span>
+                                Places API (New)
+                            </span>
+                        </div>
+                        <h1 class="text-4xl md:text-5xl font-black tracking-tight mb-3">Gym & Fitness Center Scraper</h1>
+                        <p class="max-w-2xl text-base md:text-lg text-slate-300 leading-relaxed">
+                            Scrape all gyms and fitness centers across one or more cities using Google Places types, low-field responses, and lightweight dedupe.
+                        </p>
+                    </div>
+                    <div id="heroStats" class="grid grid-cols-2 gap-3 md:min-w-[320px]"></div>
+                </div>
+            </div>
+        </header>
+
+        <section class="rounded-[28px] bg-white/90 shadow-xl shadow-slate-200/80 ring-1 ring-slate-200 mt-6">
+            <div id="stepper" class="px-5 py-5 md:px-8"></div>
+        </section>
+
+        <main class="rounded-[30px] bg-white shadow-xl shadow-slate-200/80 ring-1 ring-slate-200 overflow-hidden mt-6">
+            <div class="border-b border-slate-100 px-6 py-5 md:px-8">
+                <div class="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                    <div>
+                        <p class="text-xs font-semibold uppercase tracking-[0.24em] text-cyan-600">Workflow</p>
+                        <h2 id="sectionTitle" class="text-2xl font-bold text-slate-900">Select Cities</h2>
+                    </div>
+                    <div id="workflowBadges" class="flex flex-wrap gap-2 text-sm"></div>
+                </div>
+            </div>
+            <div id="appContent" class="p-6 md:p-8"></div>
+        </main>
+
+        <footer class="text-center mt-6 text-slate-500 text-sm">
+            Built by Curefit Analytics Team
+        </footer>
+    </div>
+
+    <script>
+        (() => {
+            const GRID_SPACING_KM = 9;
+            const MAX_NEARBY_SUBDIVISIONS = 4;
+            const DENSE_RECALL_KEYWORD_COUNT = 4;
+            const FALLBACK_PAGE_LIMIT = 3;
+            const STORAGE_KEYS = {
+                sessionId: 'fitnessScraperSessionId',
+                sessionStart: 'fitnessScraperSessionStart'
+            };
+
+            const state = {
+                step: 1,
+                cities: {},
+                citySearch: '',
+                selectedCities: [],
+                coverageModes: {},
+                modeKey: 'strict',
+                apiKey: '',
+                validationError: '',
+                loading: true,
+                isValidating: false,
+                isScraping: false,
+                progress: {
+                    phase: '',
+                    current: 0,
+                    total: 0,
+                    percentage: 0,
+                    currentLabel: ''
+                },
+                requestCount: 0,
+                results: [],
+                sessionId: '',
+                elapsedSeconds: 0,
+                pollingHandle: null,
+                sessionTimer: null
+            };
+
+            const stepMeta = [
+                { num: 1, label: 'Select Cities', icon: 'fa-location-dot' },
+                { num: 2, label: 'Coverage', icon: 'fa-layer-group' },
+                { num: 3, label: 'API Key', icon: 'fa-key' },
+                { num: 4, label: 'Review', icon: 'fa-circle-check' },
+                { num: 5, label: 'Scraping', icon: 'fa-spinner' },
+                { num: 6, label: 'Download', icon: 'fa-download' }
+            ];
+
+            const CORE_TYPES = ['gym', 'fitness_center'];
+            const EXPANDED_TYPES = ['gym', 'fitness_center', 'sports_club', 'sports_complex', 'sports_activity_location'];
+            const REVIEW_TYPES = ['sports_club', 'sports_complex', 'sports_activity_location'];
+            const NEGATIVE_TYPES = ['stadium', 'playground', 'athletic_field', 'sports_coaching'];
+            const NEGATIVE_TERMS = ['stadium', 'playground', 'sports coaching', 'academy', 'school ground', 'public park'];
+            const STRICT_PRIMARY_TYPE_BLOCKLIST = new Set([
+                'beauty_salon',
+                'consultant',
+                'hotel',
+                'park',
+                'store',
+                'sports_school',
+                'sports_coaching'
+            ]);
+            const STRONG_GYM_NAME_PATTERNS = [
+                /\bgym\b/,
+                /\bfitness\b/,
+                /\bcrossfit\b/,
+                /\bhealth\s*club\b/,
+                /\bfit\s*club\b/,
+                /\bfitness\s*studio\b/,
+                /\biron\b/,
+                /\bmuscle\b/,
+                /\bworkout\b/
+            ];
+
+            function escapeHtml(value) {
+                return String(value || '')
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;')
+                    .replace(/'/g, '&#39;');
+            }
+
+            function updateState(patch) {
+                Object.assign(state, patch);
+                render();
+            }
+
+            function getCoverageMode() {
+                return state.coverageModes[state.modeKey] || {
+                    label: 'Strict Gyms',
+                    description: 'Gyms and fitness centers only',
+                    includedTypes: CORE_TYPES,
+                    searchNearbyTypes: CORE_TYPES,
+                    fallbackQueryCount: 2
+                };
+            }
+
+            function getAllowedTypes() {
+                return state.modeKey === 'expanded' ? EXPANDED_TYPES : CORE_TYPES;
+            }
+
+            function estimateRequests() {
+                const mode = getCoverageMode();
+                if (!state.selectedCities.length || !mode) {
+                    return { gridPoints: 0, minRequests: 0, maxRequests: 0 };
+                }
+
+                return state.selectedCities.reduce((acc, cityName) => {
+                    const city = state.cities[cityName];
+                    if (!city) {
+                        return acc;
+                    }
+
+                    const latDegPerKm = 1 / 110.574;
+                    const lngDegPerKm = 1 / (111.320 * Math.cos(city.center[0] * Math.PI / 180));
+                    const latStep = GRID_SPACING_KM * latDegPerKm;
+                    const lngStep = GRID_SPACING_KM * lngDegPerKm;
+                    const latPoints = Math.ceil((city.bounds.max_lat - city.bounds.min_lat) / latStep) + 1;
+                    const lngPoints = Math.ceil((city.bounds.max_lng - city.bounds.min_lng) / lngStep) + 1;
+                    const gridPoints = latPoints * lngPoints;
+                    const fallbackQueries = mode.fallbackQueryCount || 2;
+                    const defaults = window.__fitnessDefaults || {};
+                    const maxNearbySubdivisions = defaults.maxNearbySubdivisions || MAX_NEARBY_SUBDIVISIONS;
+                    const denseRecallKeywordCount = defaults.denseRecallKeywordCount || DENSE_RECALL_KEYWORD_COUNT;
+                    const fallbackPageLimit = defaults.fallbackPageLimit || FALLBACK_PAGE_LIMIT;
+
+                    acc.gridPoints += gridPoints;
+                    acc.minRequests += gridPoints + fallbackQueries;
+                    acc.maxRequests += (gridPoints * (1 + maxNearbySubdivisions + denseRecallKeywordCount)) + (fallbackQueries * fallbackPageLimit);
+                    return acc;
+                }, { gridPoints: 0, minRequests: 0, maxRequests: 0 });
+            }
+
+            function getSelectedCitiesLabel() {
+                if (!state.selectedCities.length) {
+                    return 'Not set';
+                }
+
+                if (state.selectedCities.length <= 2) {
+                    return state.selectedCities.join(', ');
+                }
+
+                return `${state.selectedCities.length} cities selected`;
+            }
+
+            function getSelectedCitiesCsvSlug() {
+                if (!state.selectedCities.length) {
+                    return 'no_city';
+                }
+
+                if (state.selectedCities.length === 1) {
+                    return state.selectedCities[0].replace(/\s+/g, '_');
+                }
+
+                return `${state.selectedCities.length}_cities`;
+            }
+
+            function formatDuration(totalSeconds) {
+                const hours = Math.floor(totalSeconds / 3600);
+                const minutes = Math.floor((totalSeconds % 3600) / 60);
+                const seconds = totalSeconds % 60;
+
+                if (hours > 0) {
+                    return `${hours}h ${minutes}m`;
+                }
+
+                if (minutes > 0) {
+                    return `${minutes}m ${seconds}s`;
+                }
+
+                return `${seconds}s`;
+            }
+
+            function annotateResults(rows) {
+                const allowedTypes = new Set(getAllowedTypes());
+                const reviewTypes = new Set(REVIEW_TYPES);
+                const negativeTypes = new Set(NEGATIVE_TYPES);
+                const isStrictMode = state.modeKey === 'strict';
+
+                return rows.map((row) => {
+                    const types = Array.isArray(row.types) ? row.types : [];
+                    const typeSet = new Set(types);
+                    const combinedText = `${row.name || ''} ${row.address || ''}`.toLowerCase();
+                    const normalizedName = String(row.name || '').toLowerCase();
+                    const reasons = [];
+                    let cleanedStatus = 'Valid';
+                    let reviewFlag = 'No';
+
+                    const hasRequiredFields = row.place_id && row.name && row.address && row.latitude !== null && row.latitude !== undefined && row.longitude !== null && row.longitude !== undefined;
+                    const hasAllowedType = types.some((type) => allowedTypes.has(type)) || allowedTypes.has(row.primary_type);
+                    const hasCoreType = types.some((type) => CORE_TYPES.includes(type)) || CORE_TYPES.includes(row.primary_type);
+                    const hasReviewType = types.some((type) => reviewTypes.has(type)) || reviewTypes.has(row.primary_type);
+                    const hasNegativeType = types.some((type) => negativeTypes.has(type)) || negativeTypes.has(row.primary_type);
+                    const hasNegativeTerm = NEGATIVE_TERMS.some((term) => combinedText.includes(term));
+                    const primaryTypeIsCore = CORE_TYPES.includes(row.primary_type);
+                    const strictPrimaryTypeBlocked = STRICT_PRIMARY_TYPE_BLOCKLIST.has(row.primary_type);
+                    const hasStrongGymNameSignal = STRONG_GYM_NAME_PATTERNS.some((pattern) => pattern.test(normalizedName));
+
+                    if (!hasRequiredFields) {
+                        cleanedStatus = 'Not Valid';
+                        reasons.push('missing_required_fields');
+                    } else if (!hasAllowedType) {
+                        cleanedStatus = 'Not Valid';
+                        reasons.push('type_mismatch');
+                    } else if (row.business_status === 'CLOSED_PERMANENTLY') {
+                        cleanedStatus = 'Not Valid';
+                        reasons.push('permanently_closed');
+                    } else if (hasNegativeType && !hasCoreType) {
+                        cleanedStatus = 'Not Valid';
+                        reasons.push('non_gym_facility');
+                    } else if (isStrictMode && !primaryTypeIsCore) {
+                        if (strictPrimaryTypeBlocked) {
+                            cleanedStatus = 'Not Valid';
+                            reasons.push('blocked_primary_type');
+                        } else if (hasCoreType && hasStrongGymNameSignal) {
+                            reasons.push('secondary_core_type_with_name_signal');
+                            reviewFlag = 'Yes';
+                        } else {
+                            cleanedStatus = 'Not Valid';
+                            reasons.push('non_core_primary_type');
+                        }
+                    } else {
+                        reasons.push('type_matched');
+
+                        if (row.business_status === 'CLOSED_TEMPORARILY') {
+                            reviewFlag = 'Yes';
+                            reasons.push('temporarily_closed');
+                        }
+
+                        if (hasReviewType && !hasCoreType) {
+                            reviewFlag = 'Yes';
+                            reasons.push('broader_fitness_facility');
+                        }
+
+                        if (hasNegativeTerm && !hasCoreType) {
+                            reviewFlag = 'Yes';
+                            reasons.push('needs_manual_review');
+                        }
+                    }
+
+                    return {
+                        ...row,
+                        types_text: types.join('|'),
+                        cleaned_status: cleanedStatus,
+                        cleaner_reason: reasons.join('|'),
+                        review_flag: reviewFlag
+                    };
+                });
+            }
+
+            function buildStats(annotatedRows) {
+                const validRows = annotatedRows.filter((row) => row.cleaned_status === 'Valid');
+                const reviewRows = annotatedRows.filter((row) => row.review_flag === 'Yes');
+                const reasons = {
+                    missing_required_fields: 0,
+                    type_mismatch: 0,
+                    permanently_closed: 0,
+                    non_gym_facility: 0,
+                    blocked_primary_type: 0,
+                    non_core_primary_type: 0,
+                    secondary_core_type_with_name_signal: 0,
+                    temporarily_closed: 0,
+                    broader_fitness_facility: 0,
+                    needs_manual_review: 0
+                };
+
+                annotatedRows.forEach((row) => {
+                    (row.cleaner_reason || '').split('|').filter(Boolean).forEach((reason) => {
+                        if (reason in reasons) {
+                            reasons[reason] += 1;
+                        }
+                    });
+                });
+
+                return {
+                    validCount: validRows.length,
+                    removedCount: annotatedRows.length - validRows.length,
+                    reviewCount: reviewRows.length,
+                    reasons
+                };
+            }
+
+            async function loadBootstrapData() {
+                try {
+                    const [citiesResponse, coverageResponse] = await Promise.all([
+                        fetch('/api/cities'),
+                        fetch('/api/coverage-modes')
+                    ]);
+
+                    const cityData = await citiesResponse.json();
+                    const coverageData = await coverageResponse.json();
+
+                    const coverageModes = {};
+                    (coverageData.coverageModes || []).forEach((mode) => {
+                        coverageModes[mode.key] = mode;
+                    });
+
+                    state.cities = cityData.cities || {};
+                    state.coverageModes = coverageModes;
+                    if (cityData.defaults?.maxNearbySubdivisions) {
+                        // Keep UI estimates aligned with backend when defaults are provided.
+                        window.__fitnessDefaults = cityData.defaults;
+                    }
+                    state.loading = false;
+                    render();
+                    await recoverSession();
+                } catch (error) {
+                    state.loading = false;
+                    state.validationError = 'Failed to load tool metadata. Please refresh the page.';
+                    render();
+                }
+            }
+
+            function clearSessionRecovery() {
+                localStorage.removeItem(STORAGE_KEYS.sessionId);
+                localStorage.removeItem(STORAGE_KEYS.sessionStart);
+            }
+
+            function startElapsedTimer() {
+                stopElapsedTimer();
+                state.sessionTimer = setInterval(() => {
+                    const startedAt = Number(localStorage.getItem(STORAGE_KEYS.sessionStart) || 0);
+                    if (!startedAt) {
+                        return;
+                    }
+                    state.elapsedSeconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+                    renderHeader();
+                    renderStepFiveMeta();
+                }, 1000);
+            }
+
+            function stopElapsedTimer() {
+                if (state.sessionTimer) {
+                    clearInterval(state.sessionTimer);
+                    state.sessionTimer = null;
+                }
+            }
+
+            async function recoverSession() {
+                const savedSessionId = localStorage.getItem(STORAGE_KEYS.sessionId);
+                const savedStartedAt = Number(localStorage.getItem(STORAGE_KEYS.sessionStart) || 0);
+
+                if (!savedSessionId) {
+                    return;
+                }
+
+                try {
+                    const response = await fetch(`/api/status/${savedSessionId}`);
+                    if (!response.ok) {
+                        clearSessionRecovery();
+                        return;
+                    }
+
+                    const data = await response.json();
+                    state.sessionId = savedSessionId;
+                    state.selectedCities = data.cityNames || state.selectedCities;
+                    state.modeKey = data.modeKey || state.modeKey;
+                    state.elapsedSeconds = savedStartedAt ? Math.max(0, Math.floor((Date.now() - savedStartedAt) / 1000)) : 0;
+
+                    if (data.status === 'complete') {
+                        await loadResults(savedSessionId);
+                    } else if (data.status === 'in_progress' || data.status === 'starting') {
+                        state.isScraping = true;
+                        state.step = 5;
+                        state.progress = data.progress || state.progress;
+                        state.requestCount = data.requestCount || 0;
+                        startElapsedTimer();
+                        startPolling(savedSessionId);
+                        render();
+                    } else {
+                        clearSessionRecovery();
+                    }
+                } catch (error) {
+                    clearSessionRecovery();
+                }
+            }
+
+            async function validateApiKey() {
+                state.isValidating = true;
+                state.validationError = '';
+                render();
+
+                try {
+                    const response = await fetch('/api/validate-key', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ apiKey: state.apiKey })
+                    });
+
+                    const data = await response.json().catch(() => ({}));
+                    state.isValidating = false;
+
+                    if (!response.ok || !data.valid) {
+                        state.validationError = data.error || 'API key validation failed.';
+                        render();
+                        return false;
+                    }
+
+                    render();
+                    return true;
+                } catch (error) {
+                    state.isValidating = false;
+                    state.validationError = `Unable to validate API key: ${error.message}`;
+                    render();
+                    return false;
+                }
+            }
+
+            async function startScrape() {
+                state.validationError = '';
+                const isValid = await validateApiKey();
+                if (!isValid) {
+                    return;
+                }
+
+                state.isScraping = true;
+                state.step = 5;
+                state.results = [];
+                state.progress = {
+                    phase: 'Preparing',
+                    current: 0,
+                    total: estimateRequests().maxRequests,
+                    percentage: 0,
+                    currentLabel: 'Building city search plan'
+                };
+                state.requestCount = 0;
+                state.elapsedSeconds = 0;
+                render();
+
+                try {
+                    const response = await fetch('/api/scrape', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            cityNames: state.selectedCities,
+                            modeKey: state.modeKey,
+                            apiKey: state.apiKey
+                        })
+                    });
+
+                    const data = await response.json();
+
+                    if (!response.ok || !data.success) {
+                        throw new Error(data.error || 'Failed to start scrape');
+                    }
+
+                    state.sessionId = data.sessionId;
+                    localStorage.setItem(STORAGE_KEYS.sessionId, data.sessionId);
+                    localStorage.setItem(STORAGE_KEYS.sessionStart, Date.now().toString());
+                    startElapsedTimer();
+                    startPolling(data.sessionId);
+                    render();
+                } catch (error) {
+                    state.isScraping = false;
+                    state.step = 4;
+                    state.validationError = error.message;
+                    clearSessionRecovery();
+                    stopElapsedTimer();
+                    render();
+                }
+            }
+
+            async function startPolling(sessionId) {
+                stopPolling();
+                state.pollingHandle = setInterval(async () => {
+                    try {
+                        const response = await fetch(`/api/status/${sessionId}`);
+                        if (!response.ok) {
+                            throw new Error('Failed to fetch session status');
+                        }
+
+                        const data = await response.json();
+                        state.progress = data.progress || state.progress;
+                        state.requestCount = data.requestCount || 0;
+                        state.selectedCities = data.cityNames || state.selectedCities;
+                        state.modeKey = data.modeKey || state.modeKey;
+                        render();
+
+                        if (data.status === 'complete') {
+                            stopPolling();
+                            await loadResults(sessionId);
+                        } else if (data.status === 'failed') {
+                            stopPolling();
+                            stopElapsedTimer();
+                            state.isScraping = false;
+                            state.step = 4;
+                            state.validationError = data.error || 'Scrape failed.';
+                            clearSessionRecovery();
+                            render();
+                        }
+                    } catch (error) {
+                        stopPolling();
+                        stopElapsedTimer();
+                        state.isScraping = false;
+                        state.step = 4;
+                        state.validationError = error.message;
+                        clearSessionRecovery();
+                        render();
+                    }
+                }, 4000);
+            }
+
+            function stopPolling() {
+                if (state.pollingHandle) {
+                    clearInterval(state.pollingHandle);
+                    state.pollingHandle = null;
+                }
+            }
+
+            async function loadResults(sessionId) {
+                try {
+                    const response = await fetch(`/api/results/${sessionId}`);
+                    const data = await response.json();
+
+                    state.results = data.results || [];
+                    state.selectedCities = data.session?.cityNames || state.selectedCities;
+                    state.modeKey = data.session?.modeKey || state.modeKey;
+                    state.requestCount = data.session?.requestCount || state.requestCount;
+                    state.isScraping = false;
+                    state.step = 6;
+                    state.progress = {
+                        phase: 'Complete',
+                        current: state.requestCount,
+                        total: Math.max(state.requestCount, estimateRequests().maxRequests),
+                        percentage: 100,
+                        currentLabel: `Found ${(data.results || []).length} unique locations`
+                    };
+                    clearSessionRecovery();
+                    stopElapsedTimer();
+                    render();
+                } catch (error) {
+                    state.isScraping = false;
+                    state.step = 4;
+                    state.validationError = 'Failed to load completed results.';
+                    render();
+                }
+            }
+
+            function downloadResults(mode) {
+                const annotated = annotateResults(state.results);
+                const validOnly = annotated.filter((row) => row.cleaned_status === 'Valid');
+                const rows = mode === 'clean' ? validOnly : mode === 'raw_with_flags' ? annotated : state.results;
+
+                const headers = mode === 'raw'
+                    ? ['city', 'coverage_mode', 'source', 'place_id', 'name', 'address', 'latitude', 'longitude', 'primary_type', 'types', 'business_status', 'rating', 'user_rating_count', 'google_maps_uri']
+                    : ['city', 'coverage_mode', 'source', 'place_id', 'name', 'address', 'latitude', 'longitude', 'primary_type', 'types', 'business_status', 'rating', 'user_rating_count', 'google_maps_uri', 'cleaned_status', 'cleaner_reason', 'review_flag'];
+
+                const csvRows = rows.map((row) => {
+                    const baseValues = [
+                        row.city || '',
+                        getCoverageMode().label,
+                        row.source || '',
+                        row.place_id || '',
+                        row.name || '',
+                        row.address || '',
+                        row.latitude ?? '',
+                        row.longitude ?? '',
+                        row.primary_type || '',
+                        Array.isArray(row.types) ? row.types.join('|') : (row.types_text || ''),
+                        row.business_status || '',
+                        row.rating ?? '',
+                        row.user_rating_count ?? '',
+                        row.google_maps_uri || ''
+                    ];
+
+                    const extendedValues = mode === 'raw'
+                        ? []
+                        : [row.cleaned_status || '', row.cleaner_reason || '', row.review_flag || 'No'];
+
+                    return [...baseValues, ...extendedValues]
+                        .map((value) => `"${String(value).replace(/"/g, '""')}"`)
+                        .join(',');
+                });
+
+                const csv = [headers.join(','), ...csvRows].join('\n');
+                const blob = new Blob([csv], { type: 'text/csv' });
+                const url = window.URL.createObjectURL(blob);
+                const anchor = document.createElement('a');
+                anchor.href = url;
+                const suffix = mode === 'clean' ? 'CLEAN' : mode === 'raw_with_flags' ? 'RAW_WITH_FLAGS' : 'RAW';
+                anchor.download = `${getSelectedCitiesCsvSlug()}_fitness_centers_${suffix}_${new Date().toISOString().split('T')[0]}.csv`;
+                document.body.appendChild(anchor);
+                anchor.click();
+                document.body.removeChild(anchor);
+                window.URL.revokeObjectURL(url);
+            }
+
+            function resetTool() {
+                clearSessionRecovery();
+                stopPolling();
+                stopElapsedTimer();
+                state.step = 1;
+                state.citySearch = '';
+                state.selectedCities = [];
+                state.modeKey = 'strict';
+                state.apiKey = '';
+                state.validationError = '';
+                state.isValidating = false;
+                state.isScraping = false;
+                state.progress = { phase: '', current: 0, total: 0, percentage: 0, currentLabel: '' };
+                state.requestCount = 0;
+                state.results = [];
+                state.sessionId = '';
+                state.elapsedSeconds = 0;
+                render();
+            }
+
+            function renderHeader() {
+                const heroStats = document.getElementById('heroStats');
+                heroStats.innerHTML = `
+                    <div class="rounded-2xl bg-white/10 p-4 ring-1 ring-white/10 backdrop-blur">
+                        <p class="text-xs uppercase tracking-[0.18em] text-slate-400">Selected cities</p>
+                        <p class="mt-2 text-2xl font-bold">${escapeHtml(getSelectedCitiesLabel())}</p>
+                    </div>
+                    <div class="rounded-2xl bg-white/10 p-4 ring-1 ring-white/10 backdrop-blur">
+                        <p class="text-xs uppercase tracking-[0.18em] text-slate-400">Requests made</p>
+                        <p class="mt-2 text-2xl font-bold">${state.requestCount.toLocaleString()}</p>
+                    </div>
+                `;
+            }
+
+            function renderStepper() {
+                const stepper = document.getElementById('stepper');
+                stepper.innerHTML = `
+                    <div class="grid grid-cols-3 gap-4 md:grid-cols-6">
+                        ${stepMeta.map((step) => {
+                            const isComplete = state.step > step.num;
+                            const isCurrent = state.step === step.num;
+                            const tone = isComplete
+                                ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-200'
+                                : isCurrent
+                                    ? 'bg-cyan-600 text-white shadow-lg shadow-cyan-200'
+                                    : 'bg-slate-100 text-slate-400';
+
+                            return `
+                                <div class="flex flex-col items-center text-center">
+                                    <div class="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl text-base transition-all ${tone}">
+                                        <i class="fas ${isComplete ? 'fa-check' : step.icon}${isCurrent && step.num === 5 ? ' fa-spin' : ''}"></i>
+                                    </div>
+                                    <p class="text-xs md:text-sm font-semibold ${isCurrent ? 'text-slate-900' : isComplete ? 'text-emerald-700' : 'text-slate-400'}">${escapeHtml(step.label)}</p>
+                                    <p class="mt-1 text-[11px] uppercase tracking-[0.18em] text-slate-400">0${step.num}</p>
+                                </div>
+                            `;
+                        }).join('')}
+                    </div>
+                `;
+            }
+
+            function renderBadges() {
+                const container = document.getElementById('workflowBadges');
+                container.innerHTML = `
+                    <span class="inline-flex items-center rounded-full bg-slate-100 px-3 py-1 font-medium text-slate-600">Low-field responses</span>
+                    <span class="inline-flex items-center rounded-full bg-slate-100 px-3 py-1 font-medium text-slate-600">Keyword recall layer</span>
+                    <span class="inline-flex items-center rounded-full bg-slate-100 px-3 py-1 font-medium text-slate-600">Supabase-ready persistence</span>
+                `;
+            }
+
+            function renderStepOne() {
+                const filteredCities = Object.keys(state.cities).filter((city) =>
+                    city.toLowerCase().includes(state.citySearch.toLowerCase())
+                );
+
+                return `
+                    <div class="space-y-6">
+                        <div>
+                            <h2 class="text-2xl font-semibold text-slate-900 mb-2">Step 1: Select Cities</h2>
+                            <p class="text-slate-600 max-w-2xl">Choose one or more cities where you want to scrape all gym and fitness center locations.</p>
+                        </div>
+                        <div class="relative">
+                            <input
+                                id="citySearchInput"
+                                type="text"
+                                placeholder="Search for a city..."
+                                value="${escapeHtml(state.citySearch)}"
+                                class="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3.5 text-slate-900 focus:border-cyan-500 focus:ring-2 focus:ring-cyan-200 focus:outline-none"
+                            />
+                            <i class="fas fa-search absolute right-4 top-4 text-slate-400"></i>
+                        </div>
+                        <div class="grid grid-cols-2 md:grid-cols-3 gap-3 max-h-96 overflow-y-auto rounded-[24px] border border-slate-100 p-2">
+                            ${filteredCities.map((city) => `
+                                <button
+                                    data-city="${escapeHtml(city)}"
+                                    class="city-pill p-4 rounded-xl border-2 transition-all ${state.selectedCities.includes(city) ? 'border-cyan-600 bg-cyan-50 text-cyan-700 shadow-sm' : 'border-slate-200 hover:border-cyan-300 hover:bg-slate-50'}"
+                                >
+                                    <i class="fas fa-location-dot mr-2"></i>${escapeHtml(city)}
+                                </button>
+                            `).join('')}
+                        </div>
+                        ${state.selectedCities.length ? `
+                            <div class="rounded-2xl border border-cyan-200 bg-cyan-50 p-4">
+                                <p class="text-cyan-900 font-medium"><i class="fas fa-circle-check mr-2"></i>${escapeHtml(getSelectedCitiesLabel())}</p>
+                            </div>
+                        ` : ''}
+                        <div class="flex justify-end">
+                            <button id="stepOneNext" class="rounded-full bg-cyan-600 px-6 py-3 font-semibold text-white transition hover:bg-cyan-700 ${state.selectedCities.length ? '' : 'opacity-50 cursor-not-allowed'}" ${state.selectedCities.length ? '' : 'disabled'}>
+                                Next: Coverage <i class="fas fa-arrow-right ml-2"></i>
+                            </button>
+                        </div>
+                    </div>
+                `;
+            }
+
+            function renderStepTwo() {
+                const modes = Object.values(state.coverageModes);
+                return `
+                    <div class="space-y-6">
+                        <div>
+                            <h2 class="text-2xl font-semibold text-slate-900 mb-2">Step 2: Choose Coverage</h2>
+                            <p class="text-slate-600 max-w-2xl">Pick how broad the final clean output should be. The search net may be slightly broader than the final cleaner so genuine gyms are less likely to be missed.</p>
+                        </div>
+                        <div class="grid gap-4 md:grid-cols-2">
+                            ${modes.map((mode) => `
+                                <button
+                                    data-mode="${escapeHtml(mode.key)}"
+                                    class="coverage-card rounded-[26px] border p-5 text-left transition-all ${state.modeKey === mode.key ? 'border-cyan-500 bg-cyan-50 shadow-lg shadow-cyan-100' : 'border-slate-200 bg-slate-50 hover:border-cyan-300'}"
+                                >
+                                    <p class="text-xs uppercase tracking-[0.18em] ${state.modeKey === mode.key ? 'text-cyan-500' : 'text-slate-400'}">${escapeHtml(mode.key)}</p>
+                                    <h3 class="mt-2 text-xl font-bold text-slate-900">${escapeHtml(mode.label)}</h3>
+                                    <p class="mt-2 text-sm leading-6 text-slate-600">${escapeHtml(mode.description)}</p>
+                                    <p class="mt-3 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Clean output types</p>
+                                    <div class="mt-4 flex flex-wrap gap-2">
+                                        ${(mode.includedTypes || []).map((type) => `
+                                            <span class="rounded-full bg-white px-3 py-1 text-xs font-medium text-slate-600 ring-1 ring-slate-200">${escapeHtml(type)}</span>
+                                        `).join('')}
+                                    </div>
+                                    <p class="mt-4 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Search net</p>
+                                    <div class="mt-3 flex flex-wrap gap-2">
+                                        ${(mode.searchNearbyTypes || mode.includedTypes || []).map((type) => `
+                                            <span class="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-500 ring-1 ring-slate-200">${escapeHtml(type)}</span>
+                                        `).join('')}
+                                    </div>
+                                </button>
+                            `).join('')}
+                        </div>
+                        <div class="flex justify-between">
+                            <button id="stepTwoBack" class="rounded-full bg-slate-200 px-6 py-3 font-semibold text-slate-700 transition hover:bg-slate-300">
+                                <i class="fas fa-arrow-left mr-2"></i> Back
+                            </button>
+                            <button id="stepTwoNext" class="rounded-full bg-cyan-600 px-6 py-3 font-semibold text-white transition hover:bg-cyan-700">
+                                Next: API Key <i class="fas fa-arrow-right ml-2"></i>
+                            </button>
+                        </div>
+                    </div>
+                `;
+            }
+
+            function renderStepThree() {
+                return `
+                    <div class="space-y-6">
+                        <div>
+                            <h2 class="text-2xl font-semibold text-slate-900 mb-2">Step 3: Enter Google Maps API Key</h2>
+                            <p class="text-slate-600 max-w-2xl">Use a key with Places API (New) enabled. This tool only requests minimal fields to keep usage efficient.</p>
+                        </div>
+                        <div class="rounded-2xl border border-amber-200 bg-amber-50 p-4">
+                            <p class="text-amber-900 text-sm"><i class="fas fa-triangle-exclamation mr-2"></i><strong>Required API:</strong> Places API (New)</p>
+                        </div>
+                        <input
+                            id="apiKeyInput"
+                            type="password"
+                            placeholder="Enter your API key"
+                            value="${escapeHtml(state.apiKey)}"
+                            class="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3.5 text-slate-900 focus:border-cyan-500 focus:ring-2 focus:ring-cyan-200 focus:outline-none"
+                        />
+                        ${state.validationError ? `
+                            <div class="rounded-2xl border border-rose-200 bg-rose-50 p-4">
+                                <p class="text-rose-800 text-sm"><i class="fas fa-circle-exclamation mr-2"></i>${escapeHtml(state.validationError)}</p>
+                            </div>
+                        ` : ''}
+                        <div class="flex justify-between">
+                            <button id="stepThreeBack" class="rounded-full bg-slate-200 px-6 py-3 font-semibold text-slate-700 transition hover:bg-slate-300">
+                                <i class="fas fa-arrow-left mr-2"></i> Back
+                            </button>
+                            <button id="stepThreeNext" class="rounded-full bg-cyan-600 px-6 py-3 font-semibold text-white transition hover:bg-cyan-700 ${state.apiKey ? '' : 'opacity-50 cursor-not-allowed'}" ${state.apiKey ? '' : 'disabled'}>
+                                Next: Review <i class="fas fa-arrow-right ml-2"></i>
+                            </button>
+                        </div>
+                    </div>
+                `;
+            }
+
+            function renderStepFour() {
+                const estimate = estimateRequests();
+                const mode = getCoverageMode();
+
+                return `
+                    <div class="space-y-6">
+                        <div>
+                            <h2 class="text-2xl font-semibold text-slate-900 mb-2">Step 4: Review & Start Scraping</h2>
+                            <p class="text-slate-600 max-w-3xl">This tool optimizes for recall by searching a slightly broader fitness net, then refining dense areas and applying a stricter cleaner to the final export.</p>
+                        </div>
+                        <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                            <div class="rounded-[26px] border border-slate-200 bg-slate-50 p-5">
+                                <p class="text-xs uppercase tracking-[0.18em] text-slate-400">Selected cities</p>
+                                <p class="mt-3 text-3xl font-black text-slate-900">${state.selectedCities.length}</p>
+                            </div>
+                            <div class="rounded-[26px] border border-slate-200 bg-slate-50 p-5">
+                                <p class="text-xs uppercase tracking-[0.18em] text-slate-400">Coverage mode</p>
+                                <p class="mt-3 text-3xl font-black text-slate-900">${escapeHtml(mode.label)}</p>
+                            </div>
+                            <div class="rounded-[26px] border border-cyan-200 bg-cyan-50 p-5">
+                                <p class="text-xs uppercase tracking-[0.18em] text-cyan-500">Grid points</p>
+                                <p class="mt-3 text-3xl font-black text-cyan-700">${estimate.gridPoints}</p>
+                            </div>
+                            <div class="rounded-[26px] border border-indigo-200 bg-indigo-50 p-5">
+                                <p class="text-xs uppercase tracking-[0.18em] text-indigo-400">Estimated API requests (approx.)</p>
+                                <p class="mt-3 text-3xl font-black text-indigo-700">${estimate.minRequests.toLocaleString()} - ${estimate.maxRequests.toLocaleString()}</p>
+                            </div>
+                        </div>
+                        <div class="rounded-[28px] bg-slate-950 p-6 text-white">
+                            <div class="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                                <div class="max-w-3xl">
+                                    <p class="text-xs uppercase tracking-[0.18em] text-cyan-300">Cost-conscious fields</p>
+                                    <h3 class="mt-2 text-xl font-bold">Minimal data returned from Google</h3>
+                                    <p class="mt-2 text-sm leading-6 text-slate-300">The scraper requests only name, address, coordinates, type, business status, rating, review count, and Google Maps URI. No website, phone, or hours fields are requested.</p>
+                                </div>
+                                <div class="rounded-2xl bg-white/10 px-4 py-3 ring-1 ring-white/10">
+                                    <p class="text-xs uppercase tracking-[0.18em] text-slate-400">Fallback queries</p>
+                                    <p class="mt-2 text-2xl font-bold">${state.selectedCities.length * (mode.fallbackQueryCount || 2)}</p>
+                                </div>
+                            </div>
+                            <p class="mt-4 text-xs text-slate-300">Nearby cells that look saturated may be re-queried at a smaller radius, so the final request count can be higher than the base estimate.</p>
+                            <div class="mt-4 flex flex-wrap gap-2">
+                                ${state.selectedCities.map((city) => `
+                                    <span class="rounded-full bg-cyan-400/10 px-3 py-1 text-sm font-medium text-cyan-100 ring-1 ring-cyan-300/20">${escapeHtml(city)}</span>
+                                `).join('')}
+                                ${(mode.searchNearbyTypes || []).map((type) => `
+                                    <span class="rounded-full bg-cyan-400/10 px-3 py-1 text-sm font-medium text-cyan-100 ring-1 ring-cyan-300/20">${escapeHtml(type)}</span>
+                                `).join('')}
+                                ${(mode.includedTypes || []).map((type) => `
+                                    <span class="rounded-full bg-white/10 px-3 py-1 text-sm font-medium ring-1 ring-white/10">${escapeHtml(type)}</span>
+                                `).join('')}
+                            </div>
+                        </div>
+                        ${state.validationError ? `
+                            <div class="rounded-2xl border border-rose-200 bg-rose-50 p-4">
+                                <p class="text-rose-800 text-sm">
+                                    <i class="fas fa-circle-exclamation mr-2"></i>${escapeHtml(state.validationError)}
+                                </p>
+                            </div>
+                        ` : ''}
+                        <div class="flex justify-between">
+                            <button id="stepFourBack" class="rounded-full bg-slate-200 px-6 py-3 font-semibold text-slate-700 transition hover:bg-slate-300">
+                                <i class="fas fa-arrow-left mr-2"></i> Back
+                            </button>
+                            <button id="startScrapeButton" class="rounded-full bg-emerald-600 px-7 py-3 font-semibold text-white transition hover:bg-emerald-700 ${state.isValidating ? 'opacity-50 cursor-wait' : ''}" ${state.isValidating ? 'disabled' : ''}>
+                                ${state.isValidating ? '<i class="fas fa-spinner fa-spin mr-2"></i> Validating...' : '<i class="fas fa-play mr-2"></i> Start Scraping'}
+                            </button>
+                        </div>
+                    </div>
+                `;
+            }
+
+            function renderStepFive() {
+                const total = state.progress.total || 1;
+                const percentage = state.progress.percentage || Math.min(99, Math.round((state.progress.current / total) * 100));
+                return `
+                    <div class="space-y-6">
+                        <div>
+                            <h2 class="text-2xl font-semibold text-slate-900 mb-2 text-center">Scraping in Progress...</h2>
+                            <p class="text-center text-slate-600 max-w-2xl mx-auto">The server is searching the selected cities with a broader fitness net, then using the cleaner to keep the final export focused.</p>
+                        </div>
+                        <div class="rounded-[30px] bg-slate-950 p-6 text-white">
+                            <div class="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
+                                <div class="flex items-center gap-5">
+                                    <div class="flex h-20 w-20 items-center justify-center rounded-[28px] bg-white/10 text-3xl text-cyan-300 ring-1 ring-white/10">
+                                        <i class="fas fa-spinner fa-spin"></i>
+                                    </div>
+                                    <div>
+                                        <p class="text-xs uppercase tracking-[0.18em] text-cyan-300">Live status</p>
+                                        <h3 class="mt-2 text-2xl font-bold">${escapeHtml(state.progress.phase || 'Preparing')}</h3>
+                                        <p class="mt-1 text-sm text-slate-300">${escapeHtml(state.progress.currentLabel || 'Building the search plan')}</p>
+                                    </div>
+                                </div>
+                                <div class="grid grid-cols-2 gap-3 md:min-w-[340px]">
+                                    <div class="rounded-2xl bg-white/10 p-4 ring-1 ring-white/10">
+                                        <p class="text-xs uppercase tracking-[0.18em] text-slate-400">Elapsed</p>
+                                        <p class="mt-2 text-2xl font-bold">${formatDuration(state.elapsedSeconds)}</p>
+                                    </div>
+                                    <div class="rounded-2xl bg-white/10 p-4 ring-1 ring-white/10">
+                                        <p class="text-xs uppercase tracking-[0.18em] text-slate-400">Requests made</p>
+                                        <p class="mt-2 text-2xl font-bold">${state.requestCount.toLocaleString()}</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="grid gap-4 lg:grid-cols-[1.5fr_1fr]">
+                            <div class="rounded-[28px] border border-slate-200 bg-slate-50 p-6">
+                                <div class="mb-4 flex items-center justify-between text-sm text-slate-600">
+                                    <span>Overall progress</span>
+                                    <span class="font-bold text-cyan-700">${percentage}%</span>
+                                </div>
+                                <div class="h-4 w-full overflow-hidden rounded-full bg-slate-200">
+                                    <div class="flex h-4 items-center justify-center rounded-full bg-gradient-to-r from-cyan-500 via-indigo-500 to-indigo-700 text-[10px] font-bold text-white transition-all duration-300" style="width:${percentage}%">
+                                        ${percentage > 12 ? `${percentage}%` : ''}
+                                    </div>
+                                </div>
+                                <div class="mt-3 flex items-center justify-between text-xs text-slate-500">
+                                    <span>${state.progress.current || 0} / ${state.progress.total || 0} request slots used</span>
+                                    <span>${escapeHtml(getSelectedCitiesLabel())}</span>
+                                </div>
+                            </div>
+                            <div class="rounded-[28px] border border-slate-200 bg-white p-6">
+                                <p class="text-xs uppercase tracking-[0.18em] text-slate-400">Current run</p>
+                                <div class="mt-4 space-y-3 text-sm text-slate-600">
+                                    <div class="flex justify-between gap-4">
+                                        <span>Coverage</span>
+                                        <span class="font-semibold text-slate-900">${escapeHtml(getCoverageMode().label)}</span>
+                                    </div>
+                                    <div class="flex justify-between gap-4">
+                                        <span>Selected cities</span>
+                                        <span class="font-semibold text-slate-900">${escapeHtml(getSelectedCitiesLabel())}</span>
+                                    </div>
+                                    <div class="flex justify-between gap-4">
+                                        <span>Unique rows so far</span>
+                                        <span class="font-semibold text-slate-900">${state.results.length}</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            function renderStepSix() {
+                const annotated = annotateResults(state.results);
+                const stats = buildStats(annotated);
+                return `
+                    <div class="space-y-6">
+                        <div class="text-center">
+                            <i class="fas fa-circle-check text-6xl text-emerald-500 mb-4"></i>
+                            <h2 class="text-2xl font-semibold text-slate-900 mb-2">Scrape Complete</h2>
+                            <p class="text-slate-600 max-w-2xl mx-auto">Your gym and fitness center results are ready. Download the clean list for final use, or take the flagged export for audit and QA.</p>
+                        </div>
+                        <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                            <div class="rounded-[26px] border border-slate-200 bg-slate-50 p-5">
+                                <p class="text-xs uppercase tracking-[0.18em] text-slate-400">Unique raw rows</p>
+                                <p class="mt-3 text-3xl font-black text-slate-900">${state.results.length}</p>
+                            </div>
+                            <div class="rounded-[26px] border border-emerald-200 bg-emerald-50 p-5">
+                                <p class="text-xs uppercase tracking-[0.18em] text-emerald-500">Valid rows</p>
+                                <p class="mt-3 text-3xl font-black text-emerald-700">${stats.validCount}</p>
+                            </div>
+                            <div class="rounded-[26px] border border-amber-200 bg-amber-50 p-5">
+                                <p class="text-xs uppercase tracking-[0.18em] text-amber-500">Review flagged</p>
+                                <p class="mt-3 text-3xl font-black text-amber-700">${stats.reviewCount}</p>
+                            </div>
+                            <div class="rounded-[26px] border border-cyan-200 bg-cyan-50 p-5">
+                                <p class="text-xs uppercase tracking-[0.18em] text-cyan-500">Requests used</p>
+                                <p class="mt-3 text-3xl font-black text-cyan-700">${state.requestCount.toLocaleString()}</p>
+                            </div>
+                        </div>
+                        <div class="grid gap-5 xl:grid-cols-[1.1fr_0.9fr]">
+                            <div class="rounded-[28px] border border-slate-200 bg-slate-50 p-6">
+                                <div class="flex items-center justify-between gap-3">
+                                    <div>
+                                        <p class="text-xs uppercase tracking-[0.18em] text-slate-400">Cleaner summary</p>
+                                        <h3 class="mt-2 text-xl font-bold text-slate-900">What was filtered or flagged</h3>
+                                    </div>
+                                    <span class="inline-flex items-center rounded-full bg-white px-3 py-1 text-sm font-semibold text-slate-700 ring-1 ring-slate-200">
+                                        Removed: ${stats.removedCount}
+                                    </span>
+                                </div>
+                                <div class="mt-5 grid gap-3 md:grid-cols-2">
+                                    ${[
+                                        ['Missing required fields', stats.reasons.missing_required_fields],
+                                        ['Type mismatch', stats.reasons.type_mismatch],
+                                        ['Permanently closed', stats.reasons.permanently_closed],
+                                        ['Non-gym facility', stats.reasons.non_gym_facility],
+                                        ['Blocked primary type', stats.reasons.blocked_primary_type],
+                                        ['Non-core primary type', stats.reasons.non_core_primary_type],
+                                        ['Name override review', stats.reasons.secondary_core_type_with_name_signal],
+                                        ['Temporarily closed', stats.reasons.temporarily_closed],
+                                        ['Broader fitness facility', stats.reasons.broader_fitness_facility]
+                                    ].map(([label, count]) => `
+                                        <div class="flex justify-between rounded-2xl bg-white px-4 py-3 text-sm">
+                                            <span class="text-slate-500">${escapeHtml(label)}</span>
+                                            <span class="font-semibold text-slate-900">${count}</span>
+                                        </div>
+                                    `).join('')}
+                                </div>
+                                <p class="mt-5 text-sm text-slate-600">
+                                    <i class="fas fa-circle-info text-emerald-600 mr-2"></i>
+                                    The clean export keeps only valid gym and fitness rows. Expanded-mode sports clubs and sports complexes may still be marked for review.
+                                </p>
+                            </div>
+                            <div class="rounded-[28px] bg-slate-950 p-6 text-white">
+                                <p class="text-xs uppercase tracking-[0.18em] text-cyan-300">Downloads</p>
+                                <h3 class="mt-2 text-xl font-bold">Choose your output</h3>
+                                <div class="mt-5 space-y-3">
+                                    <button id="downloadClean" class="w-full rounded-2xl bg-emerald-500 px-5 py-4 text-left text-white transition hover:bg-emerald-600">
+                                        <div class="flex items-start justify-between gap-4">
+                                            <div>
+                                                <p class="text-base font-semibold"><i class="fas fa-sparkles mr-2"></i>Clean Results</p>
+                                                <p class="mt-1 text-sm text-emerald-50">Final valid gym and fitness rows only.</p>
+                                            </div>
+                                            <span class="rounded-full bg-white/15 px-3 py-1 text-sm font-semibold">${stats.validCount}</span>
+                                        </div>
+                                    </button>
+                                    <button id="downloadRawFlags" class="w-full rounded-2xl bg-indigo-600 px-5 py-4 text-left text-white transition hover:bg-indigo-700">
+                                        <div class="flex items-start justify-between gap-4">
+                                            <div>
+                                                <p class="text-base font-semibold"><i class="fas fa-tags mr-2"></i>Raw + Flags</p>
+                                                <p class="mt-1 text-sm text-indigo-100">Best for QA, audit, and manual review.</p>
+                                            </div>
+                                            <span class="rounded-full bg-white/15 px-3 py-1 text-sm font-semibold">${state.results.length}</span>
+                                        </div>
+                                    </button>
+                                    <button id="downloadRaw" class="w-full rounded-2xl bg-white/10 px-5 py-4 text-left text-white ring-1 ring-white/10 transition hover:bg-white/15">
+                                        <div class="flex items-start justify-between gap-4">
+                                            <div>
+                                                <p class="text-base font-semibold"><i class="fas fa-database mr-2"></i>Raw Results</p>
+                                                <p class="mt-1 text-sm text-slate-300">Merged unique rows before the lightweight cleaner pass.</p>
+                                            </div>
+                                            <span class="rounded-full bg-white/10 px-3 py-1 text-sm font-semibold">${state.results.length}</span>
+                                        </div>
+                                    </button>
+                                    <button id="resetTool" class="w-full rounded-2xl bg-slate-800 px-5 py-3 text-sm font-semibold text-slate-100 transition hover:bg-slate-700">
+                                        <i class="fas fa-redo mr-2"></i> Start New Scrape
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            function renderContent() {
+                const content = document.getElementById('appContent');
+                const title = document.getElementById('sectionTitle');
+                title.textContent = stepMeta.find((item) => item.num === state.step)?.label || 'Workflow';
+
+                if (state.loading) {
+                    content.innerHTML = `
+                        <div class="py-16 text-center">
+                            <i class="fas fa-spinner fa-spin text-4xl text-cyan-600"></i>
+                            <p class="mt-4 text-slate-600">Loading city and coverage metadata...</p>
+                        </div>
+                    `;
+                    return;
+                }
+
+                if (state.step === 1) content.innerHTML = renderStepOne();
+                if (state.step === 2) content.innerHTML = renderStepTwo();
+                if (state.step === 3) content.innerHTML = renderStepThree();
+                if (state.step === 4) content.innerHTML = renderStepFour();
+                if (state.step === 5) content.innerHTML = renderStepFive();
+                if (state.step === 6) content.innerHTML = renderStepSix();
+
+                bindStepEvents();
+            }
+
+            function renderStepFiveMeta() {
+                if (state.step === 5) {
+                    renderContent();
+                }
+            }
+
+            function render() {
+                renderHeader();
+                renderStepper();
+                renderBadges();
+                renderContent();
+            }
+
+            function bindStepEvents() {
+                if (state.step === 1) {
+                    const citySearchInput = document.getElementById('citySearchInput');
+                    if (citySearchInput) {
+                        citySearchInput.oninput = (event) => {
+                            state.citySearch = event.target.value;
+                            renderContent();
+                        };
+                    }
+
+                    document.querySelectorAll('.city-pill').forEach((button) => {
+                        button.onclick = () => {
+                            const city = button.dataset.city || '';
+                            if (!city) {
+                                return;
+                            }
+
+                            if (state.selectedCities.includes(city)) {
+                                state.selectedCities = state.selectedCities.filter((item) => item !== city);
+                            } else {
+                                state.selectedCities = [...state.selectedCities, city];
+                            }
+
+                            renderContent();
+                            renderHeader();
+                        };
+                    });
+
+                    const nextButton = document.getElementById('stepOneNext');
+                    if (nextButton) {
+                        nextButton.onclick = () => {
+                            if (state.selectedCities.length) {
+                                state.step = 2;
+                                render();
+                            }
+                        };
+                    }
+                }
+
+                if (state.step === 2) {
+                    document.querySelectorAll('.coverage-card').forEach((button) => {
+                        button.onclick = () => {
+                            state.modeKey = button.dataset.mode || 'strict';
+                            renderContent();
+                        };
+                    });
+
+                    document.getElementById('stepTwoBack').onclick = () => {
+                        state.step = 1;
+                        render();
+                    };
+                    document.getElementById('stepTwoNext').onclick = () => {
+                        state.step = 3;
+                        render();
+                    };
+                }
+
+                if (state.step === 3) {
+                    const apiKeyInput = document.getElementById('apiKeyInput');
+                    if (apiKeyInput) {
+                        apiKeyInput.oninput = (event) => {
+                            state.apiKey = event.target.value;
+                            state.validationError = '';
+                            renderContent();
+                        };
+                    }
+
+                    document.getElementById('stepThreeBack').onclick = () => {
+                        state.step = 2;
+                        render();
+                    };
+                    const nextButton = document.getElementById('stepThreeNext');
+                    if (nextButton) {
+                        nextButton.onclick = () => {
+                            if (state.apiKey) {
+                                state.step = 4;
+                                render();
+                            }
+                        };
+                    }
+                }
+
+                if (state.step === 4) {
+                    document.getElementById('stepFourBack').onclick = () => {
+                        state.step = 3;
+                        render();
+                    };
+                    document.getElementById('startScrapeButton').onclick = startScrape;
+                }
+
+                if (state.step === 6) {
+                    document.getElementById('downloadClean').onclick = () => downloadResults('clean');
+                    document.getElementById('downloadRawFlags').onclick = () => downloadResults('raw_with_flags');
+                    document.getElementById('downloadRaw').onclick = () => downloadResults('raw');
+                    document.getElementById('resetTool').onclick = resetTool;
+                }
+            }
+
+            loadBootstrapData();
+        })();
+    </script>
+</body>
+</html>
